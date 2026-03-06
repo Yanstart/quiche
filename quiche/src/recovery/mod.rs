@@ -365,6 +365,7 @@ pub struct RecoveryConfig {
     pub satellite_time_threshold: Option<f64>,
     pub satellite_loss_threshold: Option<f64>,
     pub satellite_loss_discrimination: bool,
+    pub satellite_rho_scaling: bool,
 }
 
 impl RecoveryConfig {
@@ -382,6 +383,7 @@ impl RecoveryConfig {
             satellite_time_threshold: config.satellite_time_threshold,
             satellite_loss_threshold: config.satellite_loss_threshold,
             satellite_loss_discrimination: config.satellite_loss_discrimination,
+            satellite_rho_scaling: config.satellite_rho_scaling,
         }
     }
 }

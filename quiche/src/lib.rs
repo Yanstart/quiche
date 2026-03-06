@@ -817,6 +817,7 @@ pub struct Config {
     satellite_time_threshold: Option<f64>,
     satellite_loss_threshold: Option<f64>,
     satellite_loss_discrimination: bool,
+    satellite_rho_scaling: bool,
     disable_dcid_reuse: bool,
 }
 
@@ -889,6 +890,7 @@ impl Config {
             satellite_packet_threshold: None,
             satellite_loss_threshold: None,
             satellite_loss_discrimination: false,
+            satellite_rho_scaling: false,
             satellite_time_threshold: None,
             disable_dcid_reuse: false,
         })
@@ -1401,6 +1403,16 @@ impl Config {
     /// Default is `false` (disabled).
     pub fn set_satellite_loss_discrimination(&mut self, enabled: bool) {
         self.satellite_loss_discrimination = enabled;
+    }
+    /// Enables Hybla-inspired rho-scaling for BBR2 satellite probing.
+    ///
+    /// When enabled, BBR2 Startup loss tolerance (FULL_LOSS_COUNT) is scaled
+    /// by rho = max(min_rtt / 25ms, 1.0) to tolerate BER-induced losses on
+    /// high-RTT satellite links. ProbeBW wait time is scaled by sqrt(rho).
+    ///
+    /// Default is `false` (disabled).
+    pub fn set_satellite_rho_scaling(&mut self, enabled: bool) {
+        self.satellite_rho_scaling = enabled;
     }
 }
 

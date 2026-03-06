@@ -618,6 +618,12 @@ fn has_custom_pacing() -> bool {
     true
 }
 
+/// Compute Hybla-inspired rho factor from min_rtt.
+/// rho = max(min_rtt / 25ms, 1.0)
+pub(crate) fn satellite_rho(min_rtt: Duration) -> f64 {
+    (min_rtt.as_millis() as f64 / 25.0).max(1.0)
+}
+
 // rate -> kbit/sec. if inf, return -1
 fn rate_kbps(rate: u64) -> isize {
     if rate == u64::MAX {
@@ -1272,6 +1278,23 @@ mod tests {
         per_loss::bbr2_update_on_loss(&mut cc, &pkt, mss, now);
         assert_eq!(cc.bbr2_state.last_loss_time, None);
         assert_eq!(cc.bbr2_state.consecutive_isolated_losses, 0);
+    }
+
+    #[test]
+    fn satellite_rho_computation() {
+        use std::time::Duration;
+        assert_eq!(satellite_rho(Duration::from_millis(25)), 1.0);
+        assert_eq!(satellite_rho(Duration::from_millis(50)), 2.0);
+        assert_eq!(satellite_rho(Duration::from_millis(600)), 24.0);
+        assert_eq!(satellite_rho(Duration::from_millis(10)), 1.0);
+    }
+
+    #[test]
+    fn satellite_rho_startup_loss_tolerance() {
+        // At GEO (600ms), rho=24, full_loss_count = 8*24 = 192
+        let rho = satellite_rho(Duration::from_millis(600));
+        let count = ((FULL_LOSS_COUNT as f64 * rho) as usize).min(256);
+        assert_eq!(count, 192);
     }
 }
 

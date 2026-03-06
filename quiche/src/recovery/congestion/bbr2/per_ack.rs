@@ -112,9 +112,16 @@ fn bbr2_check_startup_full_bandwidth(r: &mut Congestion) {
 // 4.3.1.3.  Exiting Startup Based on Packet Loss
 fn bbr2_check_startup_high_loss(r: &mut Congestion) {
     // TODO: this is not implemented (not in the draft)
+    let full_loss_count = if r.satellite_rho_scaling {
+        let rho = super::satellite_rho(r.bbr2_state.min_rtt);
+        ((FULL_LOSS_COUNT as f64 * rho) as usize).min(256)
+    } else {
+        FULL_LOSS_COUNT as usize
+    };
+
     if r.bbr2_state.loss_round_start &&
         r.bbr2_state.in_recovery &&
-        r.bbr2_state.loss_events_in_round >= FULL_LOSS_COUNT as usize &&
+        r.bbr2_state.loss_events_in_round >= full_loss_count &&
         per_loss::bbr2_is_inflight_too_high(r)
     {
         bbr2_handle_queue_too_high_in_startup(r);
@@ -175,9 +182,15 @@ fn bbr2_pick_probe_wait(r: &mut Congestion) {
     bbr.rounds_since_probe = rand::rand_u8() as usize % 2;
 
     // Decide the random wall clock bound for wait
-    bbr.bw_probe_wait = Duration::from_secs_f64(
-        2.0 + rand::rand_u64_uniform(1000000) as f64 / 1000000.0,
-    );
+    let base_wait =
+        2.0 + rand::rand_u64_uniform(1000000) as f64 / 1000000.0;
+    let wait = if r.satellite_rho_scaling {
+        let rho = super::satellite_rho(bbr.min_rtt);
+        base_wait * rho.sqrt()
+    } else {
+        base_wait
+    };
+    bbr.bw_probe_wait = Duration::from_secs_f64(wait);
 }
 
 fn bbr2_is_reno_coexistence_probe_time(r: &mut Congestion) -> bool {
