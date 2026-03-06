@@ -1099,7 +1099,7 @@ mod tests {
     fn bbr2_loss_thresh_satellite_raised() {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
-        cfg.set_loss_threshold(0.05); // 5% for GEO satellite
+        cfg.set_satellite_loss_threshold(0.05); // 5% for GEO satellite
 
         let r = Recovery::new(&cfg);
         assert_eq!(r.congestion.satellite_loss_threshold, Some(0.05));

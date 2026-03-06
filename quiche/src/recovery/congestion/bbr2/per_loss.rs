@@ -53,7 +53,19 @@ pub fn bbr2_check_inflight_too_high(r: &mut Congestion, now: Instant) -> bool {
 }
 
 pub fn bbr2_is_inflight_too_high(r: &mut Congestion) -> bool {
-    let thresh = r.satellite_loss_threshold.unwrap_or(LOSS_THRESH);
+    let mut thresh = r.satellite_loss_threshold.unwrap_or(LOSS_THRESH);
+
+    // RTT stability guard: if RTT inflated >30% above min, assume real congestion
+    if thresh > LOSS_THRESH {
+        let min_rtt = r.bbr2_state.min_rtt;
+        if min_rtt != Duration::MAX {
+            let latest_rtt = r.delivery_rate.sample_rtt();
+            if !latest_rtt.is_zero() && latest_rtt > min_rtt.mul_f64(1.3) {
+                thresh = LOSS_THRESH; // Revert to standard threshold
+            }
+        }
+    }
+
     r.bbr2_state.lost > (r.bbr2_state.tx_in_flight as f64 * thresh) as usize
 }
 

@@ -1391,7 +1391,7 @@ impl Config {
     /// GEO) to avoid mistaking bit errors for congestion.
     ///
     /// When not set, the BBR2 default (LOSS_THRESH = 0.02) is used.
-    pub fn set_loss_threshold(&mut self, threshold: f64) {
+    pub fn set_satellite_loss_threshold(&mut self, threshold: f64) {
         self.satellite_loss_threshold = Some(threshold);
     }
     /// Enables bit-error vs congestion loss discrimination for satellite.
