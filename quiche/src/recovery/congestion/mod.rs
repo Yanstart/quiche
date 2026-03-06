@@ -78,6 +78,7 @@ pub struct Congestion {
     max_datagram_size: usize,
 
     pub(crate) satellite_loss_threshold: Option<f64>,
+    pub(crate) satellite_loss_discrimination: bool,
     pub(crate) lost_count: usize,
 }
 
@@ -105,6 +106,7 @@ impl Congestion {
 
             lost_count: 0,
             satellite_loss_threshold: recovery_config.satellite_loss_threshold,
+            satellite_loss_discrimination: recovery_config.satellite_loss_discrimination,
 
             initial_congestion_window_packets: recovery_config
                 .initial_congestion_window_packets,

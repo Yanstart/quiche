@@ -25,6 +25,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use super::*;
+use std::time::Duration;
 
 // BBR2 Functions on every packet loss event.
 //
@@ -83,6 +84,28 @@ fn bbr2_handle_lost_packet(
     r.bbr2_state.lost = lost_bytes;
 
     r.delivery_rate.update_app_limited(packet.is_app_limited);
+
+    // Satellite bit-error vs congestion loss discrimination.
+    // Isolated losses (inter-loss gap > 2 * min_rtt) are likely BER,
+    // not congestion. Skip the congestion response for these.
+    if r.satellite_loss_discrimination {
+        let is_isolated = match r.bbr2_state.last_loss_time {
+            Some(last) => {
+                let gap = now.duration_since(last);
+                let min_rtt = r.bbr2_state.min_rtt;
+                min_rtt != Duration::MAX && gap > min_rtt.mul_f64(2.0)
+            }
+            None => true, // First loss -- assume isolated
+        };
+        r.bbr2_state.last_loss_time = Some(now);
+
+        if is_isolated {
+            r.bbr2_state.consecutive_isolated_losses += 1;
+            return; // Skip congestion response for isolated bit error
+        } else {
+            r.bbr2_state.consecutive_isolated_losses = 0;
+        }
+    }
 
     if bbr2_is_inflight_too_high(r) {
         r.bbr2_state.tx_in_flight = bbr2_inflight_hi_from_lost_packet(r, packet);

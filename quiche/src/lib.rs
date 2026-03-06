@@ -816,6 +816,7 @@ pub struct Config {
     satellite_packet_threshold: Option<u64>,
     satellite_time_threshold: Option<f64>,
     satellite_loss_threshold: Option<f64>,
+    satellite_loss_discrimination: bool,
     disable_dcid_reuse: bool,
 }
 
@@ -887,6 +888,7 @@ impl Config {
 
             satellite_packet_threshold: None,
             satellite_loss_threshold: None,
+            satellite_loss_discrimination: false,
             satellite_time_threshold: None,
             disable_dcid_reuse: false,
         })
@@ -1389,6 +1391,16 @@ impl Config {
     /// When not set, the BBR2 default (LOSS_THRESH = 0.02) is used.
     pub fn set_loss_threshold(&mut self, threshold: f64) {
         self.satellite_loss_threshold = Some(threshold);
+    }
+    /// Enables bit-error vs congestion loss discrimination for satellite.
+    ///
+    /// When enabled, isolated packet losses (inter-loss gap > 2 * min_rtt)
+    /// are classified as bit errors and skip the BBR2 congestion response.
+    /// This prevents cwnd reduction from satellite BER-induced loss.
+    ///
+    /// Default is `false` (disabled).
+    pub fn set_satellite_loss_discrimination(&mut self, enabled: bool) {
+        self.satellite_loss_discrimination = enabled;
     }
 }
 

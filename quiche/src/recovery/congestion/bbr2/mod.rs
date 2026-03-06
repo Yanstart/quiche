@@ -393,6 +393,11 @@ pub struct State {
     loss_in_round: bool,
 
     loss_events_in_round: usize,
+    /// Timestamp of last detected packet loss (for bit-error discrimination).
+    pub last_loss_time: Option<Instant>,
+
+    /// Count of consecutive isolated losses classified as bit errors.
+    pub consecutive_isolated_losses: u32,
 }
 
 impl State {
@@ -513,6 +518,8 @@ impl State {
             loss_in_round: false,
 
             loss_events_in_round: 0,
+            last_loss_time: None,
+            consecutive_isolated_losses: 0,
         }
     }
 }
@@ -1101,6 +1108,170 @@ mod tests {
         // 51 > 50 => inflight too high even with raised threshold.
         cc.bbr2_state.lost = 51;
         assert!(per_loss::bbr2_is_inflight_too_high(&mut cc));
+    }
+
+    #[test]
+    fn bbr2_loss_discrimination_default_disabled() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+
+        let r = Recovery::new(&cfg);
+
+        // Default: discrimination disabled.
+        assert!(!r.congestion.satellite_loss_discrimination);
+        assert_eq!(r.congestion.bbr2_state.last_loss_time, None);
+        assert_eq!(r.congestion.bbr2_state.consecutive_isolated_losses, 0);
+    }
+
+    #[test]
+    fn bbr2_loss_discrimination_isolated_skips_response() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        cfg.set_satellite_loss_discrimination(true);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+
+        // Set up BBR2 state for probing.
+        cc.bbr2_state.bw_probe_samples = true;
+        cc.bbr2_state.min_rtt = Duration::from_millis(100);
+
+        let now = Instant::now();
+        let mss = 1200;
+
+        // First loss: always classified as isolated (no prior loss time).
+        let pkt1 = Sent {
+            pkt_num: 0,
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: mss,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            tx_in_flight: 10000,
+            lost: 0,
+            has_data: true,
+            pmtud: false,
+        };
+
+        per_loss::bbr2_update_on_loss(&mut cc, &pkt1, mss, now);
+        assert_eq!(cc.bbr2_state.consecutive_isolated_losses, 1);
+        assert_eq!(cc.bbr2_state.last_loss_time, Some(now));
+
+        // Second loss after large gap (>2*min_rtt=200ms): isolated.
+        let later = now + Duration::from_millis(300);
+        let pkt2 = Sent {
+            pkt_num: 1,
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: mss,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            tx_in_flight: 10000,
+            lost: 0,
+            has_data: true,
+            pmtud: false,
+        };
+
+        per_loss::bbr2_update_on_loss(&mut cc, &pkt2, mss, later);
+        assert_eq!(cc.bbr2_state.consecutive_isolated_losses, 2);
+    }
+
+    #[test]
+    fn bbr2_loss_discrimination_burst_triggers_response() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        cfg.set_satellite_loss_discrimination(true);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+
+        cc.bbr2_state.bw_probe_samples = true;
+        cc.bbr2_state.min_rtt = Duration::from_millis(100);
+
+        let now = Instant::now();
+        let mss = 1200;
+
+        let pkt = Sent {
+            pkt_num: 0,
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: mss,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            tx_in_flight: 10000,
+            lost: 0,
+            has_data: true,
+            pmtud: false,
+        };
+
+        // First loss: isolated.
+        per_loss::bbr2_update_on_loss(&mut cc, &pkt, mss, now);
+        assert_eq!(cc.bbr2_state.consecutive_isolated_losses, 1);
+
+        // Second loss within 2*min_rtt (50ms < 200ms): burst => not isolated.
+        // consecutive_isolated_losses resets to 0.
+        let soon = now + Duration::from_millis(50);
+        per_loss::bbr2_update_on_loss(&mut cc, &pkt, mss, soon);
+        assert_eq!(cc.bbr2_state.consecutive_isolated_losses, 0);
+    }
+
+    #[test]
+    fn bbr2_loss_discrimination_disabled_normal_path() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        // Do NOT enable discrimination.
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+
+        cc.bbr2_state.bw_probe_samples = true;
+        cc.bbr2_state.min_rtt = Duration::from_millis(100);
+
+        let now = Instant::now();
+        let mss = 1200;
+
+        let pkt = Sent {
+            pkt_num: 0,
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: mss,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            tx_in_flight: 10000,
+            lost: 0,
+            has_data: true,
+            pmtud: false,
+        };
+
+        // With discrimination disabled, losses don't update
+        // last_loss_time or consecutive_isolated_losses.
+        per_loss::bbr2_update_on_loss(&mut cc, &pkt, mss, now);
+        assert_eq!(cc.bbr2_state.last_loss_time, None);
+        assert_eq!(cc.bbr2_state.consecutive_isolated_losses, 0);
     }
 }
 
