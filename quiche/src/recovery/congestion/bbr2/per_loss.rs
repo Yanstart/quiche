@@ -52,10 +52,14 @@ pub fn bbr2_check_inflight_too_high(r: &mut Congestion, now: Instant) -> bool {
     false
 }
 
-pub fn bbr2_is_inflight_too_high(r: &mut Congestion) -> bool {
+/// Get the effective loss threshold, applying RTT stability guard.
+/// If RTT is inflated >30% above min_rtt, reverts to standard LOSS_THRESH
+/// to avoid tolerating losses caused by real congestion.
+fn effective_loss_threshold(r: &Congestion) -> f64 {
     let mut thresh = r.satellite_loss_threshold.unwrap_or(LOSS_THRESH);
 
-    // RTT stability guard: if RTT inflated >30% above min, assume real congestion
+    // RTT stability guard: if RTT inflated >30% above min, assume real
+    // congestion
     if thresh > LOSS_THRESH {
         let min_rtt = r.bbr2_state.min_rtt;
         if min_rtt != Duration::MAX {
@@ -65,6 +69,12 @@ pub fn bbr2_is_inflight_too_high(r: &mut Congestion) -> bool {
             }
         }
     }
+
+    thresh
+}
+
+pub fn bbr2_is_inflight_too_high(r: &mut Congestion) -> bool {
+    let thresh = effective_loss_threshold(r);
 
     r.bbr2_state.lost > (r.bbr2_state.tx_in_flight as f64 * thresh) as usize
 }
@@ -116,7 +126,12 @@ fn bbr2_handle_lost_packet(
             return; // Skip congestion response for isolated bit error
         } else {
             r.bbr2_state.consecutive_isolated_losses = 0;
+            // Track this as a congestion loss (passed discrimination).
+            r.bbr2_state.congestion_losses_in_round += 1;
         }
+    } else {
+        // Discrimination disabled: all losses count as congestion losses.
+        r.bbr2_state.congestion_losses_in_round += 1;
     }
 
     if bbr2_is_inflight_too_high(r) {
@@ -125,11 +140,12 @@ fn bbr2_handle_lost_packet(
         bbr2_handle_inflight_too_high(r, now);
     }
 }
+
 fn bbr2_inflight_hi_from_lost_packet(r: &mut Congestion, packet: &Sent) -> usize {
     let size = packet.size;
     let inflight_prev = r.bbr2_state.tx_in_flight - size;
     let lost_prev = r.bbr2_state.lost - size;
-    let thresh = r.satellite_loss_threshold.unwrap_or(LOSS_THRESH);
+    let thresh = effective_loss_threshold(r);
     let lost_prefix = (thresh * inflight_prev as f64 - lost_prev as f64) /
         (1.0 - thresh);
 
@@ -167,6 +183,7 @@ pub fn bbr2_reset_congestion_signals(r: &mut Congestion) {
 
     bbr.loss_in_round = false;
     bbr.loss_events_in_round = 0;
+    bbr.congestion_losses_in_round = 0;
     bbr.bw_latest = 0;
     bbr.inflight_latest = 0;
 }
@@ -176,7 +193,18 @@ pub fn bbr2_update_congestion_signals(r: &mut Congestion, packet: &Acked) {
     per_ack::bbr2_update_max_bw(r, packet);
 
     if r.bbr2_state.lost > 0 {
-        r.bbr2_state.loss_in_round = true;
+        // When satellite loss discrimination is enabled, only set
+        // loss_in_round if at least one loss in this round was classified
+        // as congestion (not an isolated bit error). This prevents
+        // bbr2_loss_lower_bounds() from reducing bw_lo/inflight_lo
+        // for BER-only rounds.
+        if r.satellite_loss_discrimination {
+            if r.bbr2_state.congestion_losses_in_round > 0 {
+                r.bbr2_state.loss_in_round = true;
+            }
+        } else {
+            r.bbr2_state.loss_in_round = true;
+        }
         r.bbr2_state.loss_events_in_round += 1;
     }
 
@@ -189,6 +217,7 @@ pub fn bbr2_update_congestion_signals(r: &mut Congestion, packet: &Acked) {
 
     r.bbr2_state.loss_in_round = false;
     r.bbr2_state.loss_events_in_round = 0;
+    r.bbr2_state.congestion_losses_in_round = 0;
 }
 
 fn bbr2_adapt_lower_bounds_from_congestion(r: &mut Congestion) {

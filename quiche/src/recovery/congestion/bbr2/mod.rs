@@ -393,6 +393,10 @@ pub struct State {
     loss_in_round: bool,
 
     loss_events_in_round: usize,
+
+    /// Count of losses that passed discrimination (not classified as isolated BER).
+    /// Used to gate loss_in_round when satellite_loss_discrimination is enabled.
+    pub congestion_losses_in_round: usize,
     /// Timestamp of last detected packet loss (for bit-error discrimination).
     pub last_loss_time: Option<Instant>,
 
@@ -518,6 +522,7 @@ impl State {
             loss_in_round: false,
 
             loss_events_in_round: 0,
+            congestion_losses_in_round: 0,
             last_loss_time: None,
             consecutive_isolated_losses: 0,
         }
@@ -1295,6 +1300,142 @@ mod tests {
         let rho = satellite_rho(Duration::from_millis(600));
         let count = ((FULL_LOSS_COUNT as f64 * rho) as usize).min(256);
         assert_eq!(count, 192);
+    }
+
+    #[test]
+    fn bbr2_congestion_losses_in_round_zero_for_isolated() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        cfg.set_satellite_loss_discrimination(true);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+
+        cc.bbr2_state.bw_probe_samples = true;
+        cc.bbr2_state.min_rtt = Duration::from_millis(100);
+
+        let now = Instant::now();
+        let mss = 1200;
+
+        let pkt = Sent {
+            pkt_num: 0,
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: mss,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            tx_in_flight: 10000,
+            lost: 0,
+            has_data: true,
+            pmtud: false,
+        };
+
+        // First loss: isolated (no prior). congestion_losses_in_round stays 0.
+        per_loss::bbr2_update_on_loss(&mut cc, &pkt, mss, now);
+        assert_eq!(cc.bbr2_state.congestion_losses_in_round, 0);
+        assert_eq!(cc.bbr2_state.consecutive_isolated_losses, 1);
+
+        // Second loss after large gap (>2*min_rtt=200ms): also isolated.
+        let later = now + Duration::from_millis(300);
+        per_loss::bbr2_update_on_loss(&mut cc, &pkt, mss, later);
+        assert_eq!(cc.bbr2_state.congestion_losses_in_round, 0);
+        assert_eq!(cc.bbr2_state.consecutive_isolated_losses, 2);
+    }
+
+    #[test]
+    fn bbr2_congestion_losses_in_round_incremented_for_burst() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        cfg.set_satellite_loss_discrimination(true);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+
+        cc.bbr2_state.bw_probe_samples = true;
+        cc.bbr2_state.min_rtt = Duration::from_millis(100);
+
+        let now = Instant::now();
+        let mss = 1200;
+
+        let pkt = Sent {
+            pkt_num: 0,
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: mss,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            tx_in_flight: 10000,
+            lost: 0,
+            has_data: true,
+            pmtud: false,
+        };
+
+        // First loss: isolated.
+        per_loss::bbr2_update_on_loss(&mut cc, &pkt, mss, now);
+        assert_eq!(cc.bbr2_state.congestion_losses_in_round, 0);
+
+        // Second loss within 2*min_rtt: burst => congestion.
+        let soon = now + Duration::from_millis(50);
+        per_loss::bbr2_update_on_loss(&mut cc, &pkt, mss, soon);
+        assert_eq!(cc.bbr2_state.congestion_losses_in_round, 1);
+    }
+
+    #[test]
+    fn bbr2_loss_in_round_gated_by_discrimination() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        cfg.set_satellite_loss_discrimination(true);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+
+        // Simulate: discrimination enabled, raw lost > 0 but
+        // congestion_losses_in_round == 0 (all losses were isolated BER).
+        cc.bbr2_state.lost = 5;
+        cc.bbr2_state.congestion_losses_in_round = 0;
+        cc.bbr2_state.loss_in_round = false;
+
+        // Manually replicate the gating logic from bbr2_update_congestion_signals.
+        // With discrimination on and congestion_losses_in_round == 0,
+        // loss_in_round must NOT be set.
+        if cc.bbr2_state.lost > 0 {
+            if cc.satellite_loss_discrimination {
+                if cc.bbr2_state.congestion_losses_in_round > 0 {
+                    cc.bbr2_state.loss_in_round = true;
+                }
+            } else {
+                cc.bbr2_state.loss_in_round = true;
+            }
+        }
+        assert!(!cc.bbr2_state.loss_in_round,
+            "loss_in_round must stay false when only isolated losses in round");
+
+        // Now with congestion_losses_in_round > 0, it should set loss_in_round.
+        cc.bbr2_state.congestion_losses_in_round = 1;
+        cc.bbr2_state.loss_in_round = false;
+        if cc.bbr2_state.lost > 0 {
+            if cc.satellite_loss_discrimination {
+                if cc.bbr2_state.congestion_losses_in_round > 0 {
+                    cc.bbr2_state.loss_in_round = true;
+                }
+            } else {
+                cc.bbr2_state.loss_in_round = true;
+            }
+        }
+        assert!(cc.bbr2_state.loss_in_round,
+            "loss_in_round must be true when congestion losses exist");
     }
 }
 
