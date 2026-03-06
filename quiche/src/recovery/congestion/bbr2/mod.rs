@@ -1059,6 +1059,49 @@ mod tests {
         assert_eq!(r.congestion.bbr2_state.state, BBR2StateMachine::ProbeRTT);
         assert_eq!(r.congestion.bbr2_state.pacing_gain, 1.0);
     }
+
+    #[test]
+    fn bbr2_loss_thresh_default() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+
+        let r = Recovery::new(&cfg);
+
+        // Default: no satellite_loss_threshold configured.
+        assert_eq!(r.congestion.satellite_loss_threshold, None);
+
+        // Simulate: tx_in_flight=1000, lost=21 (>2% of 1000).
+        // With default LOSS_THRESH=0.02, 21 > 20 => inflight too high.
+        let mut cc = r.congestion;
+        cc.bbr2_state.tx_in_flight = 1000;
+        cc.bbr2_state.lost = 21;
+        assert!(per_loss::bbr2_is_inflight_too_high(&mut cc));
+
+        // 19 < 20 => not too high.
+        cc.bbr2_state.lost = 19;
+        assert!(!per_loss::bbr2_is_inflight_too_high(&mut cc));
+    }
+
+    #[test]
+    fn bbr2_loss_thresh_satellite_raised() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        cfg.set_loss_threshold(0.05); // 5% for GEO satellite
+
+        let r = Recovery::new(&cfg);
+        assert_eq!(r.congestion.satellite_loss_threshold, Some(0.05));
+
+        // tx_in_flight=1000, lost=40 (<5% of 1000=50).
+        // With raised threshold, 40 < 50 => not too high.
+        let mut cc = r.congestion;
+        cc.bbr2_state.tx_in_flight = 1000;
+        cc.bbr2_state.lost = 40;
+        assert!(!per_loss::bbr2_is_inflight_too_high(&mut cc));
+
+        // 51 > 50 => inflight too high even with raised threshold.
+        cc.bbr2_state.lost = 51;
+        assert!(per_loss::bbr2_is_inflight_too_high(&mut cc));
+    }
 }
 
 mod init;

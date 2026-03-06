@@ -363,6 +363,7 @@ pub struct RecoveryConfig {
     initial_congestion_window_packets: usize,
     pub satellite_packet_threshold: Option<u64>,
     pub satellite_time_threshold: Option<f64>,
+    pub satellite_loss_threshold: Option<f64>,
 }
 
 impl RecoveryConfig {
@@ -378,6 +379,7 @@ impl RecoveryConfig {
                 .initial_congestion_window_packets,
             satellite_packet_threshold: config.satellite_packet_threshold,
             satellite_time_threshold: config.satellite_time_threshold,
+            satellite_loss_threshold: config.satellite_loss_threshold,
         }
     }
 }

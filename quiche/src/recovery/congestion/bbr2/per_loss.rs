@@ -52,7 +52,8 @@ pub fn bbr2_check_inflight_too_high(r: &mut Congestion, now: Instant) -> bool {
 }
 
 pub fn bbr2_is_inflight_too_high(r: &mut Congestion) -> bool {
-    r.bbr2_state.lost > (r.bbr2_state.tx_in_flight as f64 * LOSS_THRESH) as usize
+    let thresh = r.satellite_loss_threshold.unwrap_or(LOSS_THRESH);
+    r.bbr2_state.lost > (r.bbr2_state.tx_in_flight as f64 * thresh) as usize
 }
 
 fn bbr2_handle_inflight_too_high(r: &mut Congestion, now: Instant) {
@@ -89,13 +90,13 @@ fn bbr2_handle_lost_packet(
         bbr2_handle_inflight_too_high(r, now);
     }
 }
-
 fn bbr2_inflight_hi_from_lost_packet(r: &mut Congestion, packet: &Sent) -> usize {
     let size = packet.size;
     let inflight_prev = r.bbr2_state.tx_in_flight - size;
     let lost_prev = r.bbr2_state.lost - size;
-    let lost_prefix = (LOSS_THRESH * inflight_prev as f64 - lost_prev as f64) /
-        (1.0 - LOSS_THRESH);
+    let thresh = r.satellite_loss_threshold.unwrap_or(LOSS_THRESH);
+    let lost_prefix = (thresh * inflight_prev as f64 - lost_prev as f64) /
+        (1.0 - thresh);
 
     inflight_prev + lost_prefix as usize
 }

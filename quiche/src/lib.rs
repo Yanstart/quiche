@@ -815,6 +815,7 @@ pub struct Config {
 
     satellite_packet_threshold: Option<u64>,
     satellite_time_threshold: Option<f64>,
+    satellite_loss_threshold: Option<f64>,
     disable_dcid_reuse: bool,
 }
 
@@ -885,6 +886,7 @@ impl Config {
 
 
             satellite_packet_threshold: None,
+            satellite_loss_threshold: None,
             satellite_time_threshold: None,
             disable_dcid_reuse: false,
         })
@@ -1377,6 +1379,16 @@ impl Config {
     /// used.
     pub fn set_time_threshold(&mut self, multiplier: f64) {
         self.satellite_time_threshold = Some(multiplier);
+    }
+    /// Sets the BBR2 loss threshold for satellite bit error tolerance.
+    ///
+    /// BBR2 default LOSS_THRESH is 0.02 (2%). Satellite links with BER-
+    /// induced loss may benefit from a higher threshold (e.g., 0.05 for
+    /// GEO) to avoid mistaking bit errors for congestion.
+    ///
+    /// When not set, the BBR2 default (LOSS_THRESH = 0.02) is used.
+    pub fn set_loss_threshold(&mut self, threshold: f64) {
+        self.satellite_loss_threshold = Some(threshold);
     }
 }
 
