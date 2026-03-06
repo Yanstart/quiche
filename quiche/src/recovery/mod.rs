@@ -361,6 +361,8 @@ pub struct RecoveryConfig {
     pacing: bool,
     max_pacing_rate: Option<u64>,
     initial_congestion_window_packets: usize,
+    pub satellite_packet_threshold: Option<u64>,
+    pub satellite_time_threshold: Option<f64>,
 }
 
 impl RecoveryConfig {
@@ -374,6 +376,8 @@ impl RecoveryConfig {
             max_pacing_rate: config.max_pacing_rate,
             initial_congestion_window_packets: config
                 .initial_congestion_window_packets,
+            satellite_packet_threshold: config.satellite_packet_threshold,
+            satellite_time_threshold: config.satellite_time_threshold,
         }
     }
 }
@@ -391,9 +395,9 @@ impl Recovery {
 
             lost_spurious_count: 0,
 
-            pkt_thresh: INITIAL_PACKET_THRESHOLD,
+            pkt_thresh: recovery_config.satellite_packet_threshold.unwrap_or(INITIAL_PACKET_THRESHOLD),
 
-            time_thresh: INITIAL_TIME_THRESHOLD,
+            time_thresh: recovery_config.satellite_time_threshold.unwrap_or(INITIAL_TIME_THRESHOLD),
 
             bytes_in_flight: 0,
 
@@ -2148,6 +2152,24 @@ mod tests {
         assert_eq!(r.epochs[packet::Epoch::Application].in_flight_count, 0);
         assert_eq!(r.bytes_in_flight, 0);
         assert_eq!(r.congestion.lost_count, 0);
+    }
+
+    #[test]
+    fn satellite_custom_recovery_thresholds() {
+        let mut config = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        config.set_packet_threshold(8);
+        config.set_time_threshold(1.625);
+        let recovery_config = RecoveryConfig::from_config(&config);
+        assert_eq!(recovery_config.satellite_packet_threshold, Some(8));
+        assert_eq!(recovery_config.satellite_time_threshold, Some(1.625));
+    }
+
+    #[test]
+    fn satellite_default_recovery_thresholds() {
+        let config = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        let recovery_config = RecoveryConfig::from_config(&config);
+        assert_eq!(recovery_config.satellite_packet_threshold, None);
+        assert_eq!(recovery_config.satellite_time_threshold, None);
     }
 }
 

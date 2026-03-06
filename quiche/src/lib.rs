@@ -812,6 +812,9 @@ pub struct Config {
 
     max_amplification_factor: usize,
 
+
+    satellite_packet_threshold: Option<u64>,
+    satellite_time_threshold: Option<f64>,
     disable_dcid_reuse: bool,
 }
 
@@ -880,6 +883,9 @@ impl Config {
 
             max_amplification_factor: MAX_AMPLIFICATION_FACTOR,
 
+
+            satellite_packet_threshold: None,
+            satellite_time_threshold: None,
             disable_dcid_reuse: false,
         })
     }
@@ -1349,6 +1355,28 @@ impl Config {
     /// The default value is `false`.
     pub fn set_disable_dcid_reuse(&mut self, v: bool) {
         self.disable_dcid_reuse = v;
+    }
+
+    /// Sets the packet reordering threshold for loss detection.
+    ///
+    /// RFC 9002 default is 3. Satellite links with higher jitter may
+    /// benefit from a larger value (e.g., 8) to reduce spurious loss.
+    ///
+    /// When not set, the RFC 9002 default (INITIAL_PACKET_THRESHOLD) is
+    /// used.
+    pub fn set_packet_threshold(&mut self, threshold: u64) {
+        self.satellite_packet_threshold = Some(threshold);
+    }
+
+    /// Sets the time reordering threshold multiplier for loss detection.
+    ///
+    /// RFC 9002 default is 9/8 (1.125). Satellite links may benefit from
+    /// a larger multiplier (e.g., 1.625) to account for RTT variance.
+    ///
+    /// When not set, the RFC 9002 default (INITIAL_TIME_THRESHOLD) is
+    /// used.
+    pub fn set_time_threshold(&mut self, multiplier: f64) {
+        self.satellite_time_threshold = Some(multiplier);
     }
 }
 
