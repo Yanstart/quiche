@@ -80,6 +80,7 @@ pub struct Congestion {
     pub(crate) satellite_loss_threshold: Option<f64>,
     pub(crate) satellite_loss_discrimination: bool,
     pub(crate) satellite_rho_scaling: bool,
+    pub(crate) cwnd_frozen: bool,
     pub(crate) lost_count: usize,
 }
 
@@ -109,6 +110,7 @@ impl Congestion {
             satellite_loss_threshold: recovery_config.satellite_loss_threshold,
             satellite_loss_discrimination: recovery_config.satellite_loss_discrimination,
             satellite_rho_scaling: recovery_config.satellite_rho_scaling,
+            cwnd_frozen: false,
 
             initial_congestion_window_packets: recovery_config
                 .initial_congestion_window_packets,
@@ -347,3 +349,32 @@ mod reno;
 
 #[cfg(test)]
 mod test_sender;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recovery::RecoveryConfig;
+
+    fn default_congestion() -> Congestion {
+        let config = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        Congestion::from_config(&RecoveryConfig::from_config(&config))
+    }
+
+    #[test]
+    fn test_cwnd_freeze_flag_default_unfrozen() {
+        let cc = default_congestion();
+        assert!(!cc.cwnd_frozen);
+    }
+
+    #[test]
+    fn test_cwnd_freeze_toggle() {
+        let mut cc = default_congestion();
+        assert!(!cc.cwnd_frozen);
+
+        cc.cwnd_frozen = true;
+        assert!(cc.cwnd_frozen);
+
+        cc.cwnd_frozen = false;
+        assert!(!cc.cwnd_frozen);
+    }
+}
