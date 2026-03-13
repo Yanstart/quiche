@@ -4771,6 +4771,27 @@ impl Connection {
             .unwrap_or(0)
     }
 
+    /// Freeze or unfreeze the congestion window on the active path.
+    ///
+    /// When frozen, BBR2/Cubic/Reno will not reduce CWND on packet loss.
+    /// Used during predicted satellite handovers to preserve congestion state.
+    ///
+    /// The caller MUST unfreeze within a bounded duration to prevent masking
+    /// real congestion.
+    pub fn freeze_cwnd(&mut self, frozen: bool) {
+        if let Ok(p) = self.paths.get_active_mut() {
+            p.recovery.freeze_cwnd(frozen);
+        }
+    }
+
+    /// Whether the congestion window is currently frozen on the active path.
+    pub fn is_cwnd_frozen(&self) -> bool {
+        match self.paths.get_active() {
+            Ok(p) => p.recovery.is_cwnd_frozen(),
+            _ => false,
+        }
+    }
+
     /// Reads contiguous data from a stream into the provided slice.
     ///
     /// The slice must be sized by the caller and will be populated up to its
