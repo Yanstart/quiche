@@ -710,6 +710,16 @@ impl Recovery {
         self.congestion.congestion_window()
     }
 
+    /// Freeze or unfreeze the congestion window.
+    pub fn freeze_cwnd(&mut self, frozen: bool) {
+        self.congestion.cwnd_frozen = frozen;
+    }
+
+    /// Whether the congestion window is currently frozen.
+    pub fn is_cwnd_frozen(&self) -> bool {
+        self.congestion.cwnd_frozen
+    }
+
     pub fn cwnd_available(&self) -> usize {
         // Ignore cwnd when sending probe packets.
         if self.epochs.iter().any(|e| e.loss_probes > 0) {
@@ -2158,6 +2168,86 @@ mod tests {
         assert_eq!(r.epochs[packet::Epoch::Application].in_flight_count, 0);
         assert_eq!(r.bytes_in_flight, 0);
         assert_eq!(r.congestion.lost_count, 0);
+    }
+
+    #[test]
+    fn cwnd_frozen_prevents_reduction() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::Reno);
+
+        let mut r = Recovery::new(&cfg);
+
+        let mut now = Instant::now();
+
+        // Send 4 packets to establish bytes in flight.
+        for i in 0..4u64 {
+            let p = Sent {
+                pkt_num: i,
+                frames: smallvec![],
+                time_sent: now,
+                time_acked: None,
+                time_lost: None,
+                size: 1000,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                has_data: false,
+                pmtud: false,
+            };
+
+            r.on_packet_sent(
+                p,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+        }
+
+        assert_eq!(r.bytes_in_flight, 4000);
+
+        now += Duration::from_millis(10);
+
+        // ACK packets 2 and 3, leaving 0 and 1 unacked.
+        // This will cause packet 0 to be declared lost (reordering
+        // threshold exceeded).
+        let mut acked = ranges::RangeSet::default();
+        acked.insert(2..4);
+
+        let cwnd_before = r.cwnd();
+
+        // Freeze the CWND before loss is detected.
+        r.freeze_cwnd(true);
+        assert!(r.is_cwnd_frozen());
+
+        assert_eq!(
+            r.on_ack_received(
+                &acked,
+                25,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            ),
+            Ok((1, 1000, 2 * 1000))
+        );
+
+        // CWND must NOT have decreased because it was frozen.
+        assert!(
+            r.cwnd() >= cwnd_before,
+            "cwnd should not decrease when frozen: before={}, after={}",
+            cwnd_before,
+            r.cwnd()
+        );
+
+        // Unfreeze and verify the flag is cleared.
+        r.freeze_cwnd(false);
+        assert!(!r.is_cwnd_frozen());
     }
 
     #[test]

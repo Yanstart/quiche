@@ -109,6 +109,10 @@ fn congestion_event(
     r: &mut Congestion, _bytes_in_flight: usize, _lost_bytes: usize,
     largest_lost_pkt: &Sent, now: Instant,
 ) {
+    if r.cwnd_frozen {
+        return;
+    }
+
     // Start a new congestion event if packet was sent after the
     // start of the previous congestion recovery period.
     let time_sent = largest_lost_pkt.time_sent;

@@ -602,6 +602,10 @@ fn congestion_event(
     r: &mut Congestion, bytes_in_flight: usize, lost_bytes: usize,
     largest_lost_pkt: &Sent, now: Instant,
 ) {
+    if r.cwnd_frozen {
+        return;
+    }
+
     r.bbr2_state.newly_lost_bytes = lost_bytes;
 
     per_loss::bbr2_update_on_loss(r, largest_lost_pkt, lost_bytes, now);

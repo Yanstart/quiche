@@ -80,6 +80,10 @@ pub fn bbr2_is_inflight_too_high(r: &mut Congestion) -> bool {
 }
 
 fn bbr2_handle_inflight_too_high(r: &mut Congestion, now: Instant) {
+    if r.cwnd_frozen {
+        return;
+    }
+
     // Only react once per bw probe.
     r.bbr2_state.bw_probe_samples = false;
 
