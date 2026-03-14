@@ -110,8 +110,11 @@ fn bbr3_check_startup_full_bandwidth(r: &mut Congestion) {
 }
 
 // 4.3.1.3.  Exiting Startup Based on Packet Loss
+// sat(#48): BBRv3 disjunctive startup loss exit.
+// BBRv2 required: in_recovery AND loss_events >= N AND inflight_too_high.
+// BBRv3 removes the in_recovery guard and uses OR:
+//   loss_events >= FULL_LOSS_COUNT  OR  inflight_too_high.
 fn bbr3_check_startup_high_loss(r: &mut Congestion) {
-    // TODO: this is not implemented (not in the draft)
     let full_loss_count = if r.satellite_rho_scaling {
         let rho = super::satellite_rho(r.bbr3_state.min_rtt);
         ((FULL_LOSS_COUNT as f64 * rho) as usize).min(256)
@@ -120,9 +123,8 @@ fn bbr3_check_startup_high_loss(r: &mut Congestion) {
     };
 
     if r.bbr3_state.loss_round_start &&
-        r.bbr3_state.in_recovery &&
-        r.bbr3_state.loss_events_in_round >= full_loss_count &&
-        per_loss::bbr3_is_inflight_too_high(r)
+        (r.bbr3_state.loss_events_in_round >= full_loss_count ||
+            per_loss::bbr3_is_inflight_too_high(r))
     {
         bbr3_handle_queue_too_high_in_startup(r);
     }
