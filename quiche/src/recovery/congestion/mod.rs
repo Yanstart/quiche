@@ -58,6 +58,9 @@ pub struct Congestion {
     // BBRv2 state.
     bbr2_state: bbr2::State,
 
+    // BBRv3 state.
+    bbr3_state: bbr3::State,
+
     pub(crate) congestion_window: usize,
 
     pub(crate) ssthresh: usize,
@@ -136,6 +139,8 @@ impl Congestion {
             bbr_state: bbr::State::new(),
 
             bbr2_state: bbr2::State::new(),
+
+            bbr3_state: bbr3::State::new(),
         };
 
         (cc.cc_ops.on_init)(&mut cc);
@@ -269,6 +274,8 @@ pub enum CongestionControlAlgorithm {
     BBR   = 2,
     /// BBRv2 congestion control algorithm. `bbr2` in a string form.
     BBR2  = 3,
+    /// BBRv3 congestion control algorithm. `bbr3` in a string form.
+    BBR3  = 4,
 }
 
 impl FromStr for CongestionControlAlgorithm {
@@ -283,6 +290,7 @@ impl FromStr for CongestionControlAlgorithm {
             "cubic" => Ok(CongestionControlAlgorithm::CUBIC),
             "bbr" => Ok(CongestionControlAlgorithm::BBR),
             "bbr2" => Ok(CongestionControlAlgorithm::BBR2),
+            "bbr3" => Ok(CongestionControlAlgorithm::BBR3),
 
             _ => Err(crate::Error::CongestionControl),
         }
@@ -334,12 +342,14 @@ impl From<CongestionControlAlgorithm> for &'static CongestionControlOps {
             CongestionControlAlgorithm::CUBIC => &cubic::CUBIC,
             CongestionControlAlgorithm::BBR => &bbr::BBR,
             CongestionControlAlgorithm::BBR2 => &bbr2::BBR2,
+            CongestionControlAlgorithm::BBR3 => &bbr3::BBR3,
         }
     }
 }
 
 mod bbr;
 mod bbr2;
+mod bbr3;
 mod cubic;
 mod delivery_rate;
 mod hystart;
