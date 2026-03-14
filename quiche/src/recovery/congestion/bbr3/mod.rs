@@ -59,7 +59,7 @@ const PACING_MARGIN_PERCENT: f64 = 0.01;
 const STARTUP_PACING_GAIN: f64 = 2.77;
 
 /// A constant specifying the pacing gain value for Probe Down mode.
-const PROBE_DOWN_PACING_GAIN: f64 = 3_f64 / 4_f64;
+const PROBE_DOWN_PACING_GAIN: f64 = 0.90;
 
 /// A constant specifying the pacing gain value for Probe Up mode.
 const PROBE_UP_PACING_GAIN: f64 = 5_f64 / 4_f64;
@@ -70,7 +70,7 @@ const PACING_GAIN: f64 = 1.0;
 
 /// A constant specifying the minimum gain value for the cwnd in the Startup
 /// phase
-const STARTUP_CWND_GAIN: f64 = 2.77;
+const STARTUP_CWND_GAIN: f64 = 2.0;
 
 /// A constant specifying the minimum gain value for
 /// calculating the cwnd that will allow the sending rate to double each
@@ -82,7 +82,7 @@ const CWND_GAIN: f64 = 2.0;
 const LOSS_THRESH: f64 = 0.02;
 
 /// Exit startup if the number of loss marking events is >=FULL_LOSS_COUNT
-const FULL_LOSS_COUNT: u32 = 8;
+const FULL_LOSS_COUNT: u32 = 6;
 
 /// The default multiplicative decrease to make upon each round
 /// trip during which the connection detects packet loss (the value is
@@ -126,7 +126,7 @@ const PROBE_RTT_DURATION: Duration = Duration::from_millis(200);
 /// ProbeRTTInterval: A constant specifying the minimum time interval between
 /// ProbeRTT states. To do: investigate probe duration. Set arbitrarily high for
 /// now.
-const PROBE_RTT_INTERVAL: Duration = Duration::from_secs(86400);
+const PROBE_RTT_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Threshold for checking a full bandwidth growth during Startup.
 const MAX_BW_GROWTH_THRESHOLD: f64 = 1.25;
@@ -352,6 +352,10 @@ pub struct State {
     // ProbeRTT state.
     probe_rtt_expired: bool,
 
+    /// Configurable ProbeRTT interval. Defaults to PROBE_RTT_INTERVAL (5s).
+    /// Quick- can override per satellite profile (e.g. 15s for GEO).
+    pub probe_rtt_interval: Duration,
+
     // Others
     // A state indicating we are in the recovery.
     in_recovery: bool,
@@ -486,6 +490,8 @@ impl State {
             probe_rtt_min_stamp: now,
 
             probe_rtt_expired: false,
+
+            probe_rtt_interval: PROBE_RTT_INTERVAL,
 
             in_recovery: false,
 
@@ -1300,10 +1306,10 @@ mod tests {
 
     #[test]
     fn satellite_rho_startup_loss_tolerance() {
-        // At GEO (600ms), rho=24, full_loss_count = 8*24 = 192
+        // At GEO (600ms), rho=24, full_loss_count = 6*24 = 144
         let rho = satellite_rho(Duration::from_millis(600));
         let count = ((FULL_LOSS_COUNT as f64 * rho) as usize).min(256);
-        assert_eq!(count, 192);
+        assert_eq!(count, 144);
     }
 
     #[test]

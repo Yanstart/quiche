@@ -454,7 +454,7 @@ fn bbr3_adapt_upper_bounds(r: &mut Congestion, now: Instant) {
 fn bbr3_update_min_rtt(r: &mut Congestion, now: Instant) {
     let bbr = &mut r.bbr3_state;
 
-    bbr.probe_rtt_expired = now > bbr.probe_rtt_min_stamp + PROBE_RTT_INTERVAL;
+    bbr.probe_rtt_expired = now > bbr.probe_rtt_min_stamp + bbr.probe_rtt_interval;
 
     let rs_rtt = r.delivery_rate.sample_rtt();
 
