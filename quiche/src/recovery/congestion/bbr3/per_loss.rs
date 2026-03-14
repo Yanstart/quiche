@@ -79,12 +79,37 @@ pub fn bbr3_is_inflight_too_high(r: &mut Congestion) -> bool {
     r.bbr3_state.lost > (r.bbr3_state.tx_in_flight as f64 * thresh) as usize
 }
 
-fn bbr3_handle_inflight_too_high(r: &mut Congestion, now: Instant) {
+fn bbr3_handle_inflight_too_high(r: &mut Congestion, _now: Instant) {
     if r.cwnd_frozen {
         return;
     }
 
-    // Only react once per bw probe.
+    // sat(#48): BBRv3 fix -- in ProbeBW_UP, when inflight is too high,
+    // adjust inflight_hi (cap it) but do NOT set bw_probe_samples=false
+    // and do NOT force transition to DOWN. Let the normal UP exit
+    // condition in bbr3_update_probe_bw_cycle_phase() handle it.
+    //
+    // BBRv2 bug: setting bw_probe_samples=false here caused premature
+    // exit from probing, preventing the sender from fully utilizing
+    // available bandwidth especially on satellite links.
+    let in_probe_up =
+        r.bbr3_state.state == BBR3StateMachine::ProbeBWUP;
+
+    if in_probe_up {
+        // ProbeBW_UP: only cap inflight_hi, do not stop probing.
+        if !r.delivery_rate.sample_is_app_limited() {
+            r.bbr3_state.inflight_hi = r
+                .bbr3_state
+                .tx_in_flight
+                .max(
+                    (per_ack::bbr3_target_inflight(r) as f64 * BETA)
+                        as usize,
+                );
+        }
+        return;
+    }
+
+    // Non-UP states: full reaction -- stop probing and transition.
     r.bbr3_state.bw_probe_samples = false;
 
     if !r.delivery_rate.sample_is_app_limited() {
@@ -92,10 +117,6 @@ fn bbr3_handle_inflight_too_high(r: &mut Congestion, now: Instant) {
             .bbr3_state
             .tx_in_flight
             .max((per_ack::bbr3_target_inflight(r) as f64 * BETA) as usize);
-    }
-
-    if r.bbr3_state.state == BBR3StateMachine::ProbeBWUP {
-        per_ack::bbr3_start_probe_bw_down(r, now);
     }
 }
 
