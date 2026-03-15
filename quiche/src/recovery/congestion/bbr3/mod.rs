@@ -1447,6 +1447,363 @@ mod tests {
         assert!(cc.bbr3_state.loss_in_round,
             "loss_in_round must be true when congestion losses exist");
     }
+
+    // ================================================================
+    // BBRv3-specific tests: verify constant changes and satellite patches
+    // ================================================================
+
+    #[test]
+    fn test_bbr3_constants() {
+        // BBRv3 changed constants (vs BBRv2):
+        // STARTUP_CWND_GAIN: 2.77 -> 2.0
+        assert_eq!(STARTUP_CWND_GAIN, 2.0);
+
+        // PROBE_DOWN_PACING_GAIN: 0.75 -> 0.90
+        assert!(
+            (PROBE_DOWN_PACING_GAIN - 0.90).abs() < f64::EPSILON,
+            "PROBE_DOWN_PACING_GAIN should be 0.90, got {}",
+            PROBE_DOWN_PACING_GAIN
+        );
+
+        // FULL_LOSS_COUNT: 8 -> 6
+        assert_eq!(FULL_LOSS_COUNT, 6);
+
+        // PROBE_RTT_INTERVAL: 86400s -> 5s
+        assert_eq!(PROBE_RTT_INTERVAL, Duration::from_secs(5));
+
+        // Unchanged constants that must remain stable:
+        assert!(
+            (STARTUP_PACING_GAIN - 2.77).abs() < f64::EPSILON,
+            "STARTUP_PACING_GAIN should remain 2.77, got {}",
+            STARTUP_PACING_GAIN
+        );
+        assert!(
+            (LOSS_THRESH - 0.02).abs() < f64::EPSILON,
+            "LOSS_THRESH should remain 0.02, got {}",
+            LOSS_THRESH
+        );
+        assert!(
+            (BETA - 0.7).abs() < f64::EPSILON,
+            "BETA should remain 0.7, got {}",
+            BETA
+        );
+        assert!(
+            (HEADROOM - 0.85).abs() < f64::EPSILON,
+            "HEADROOM should remain 0.85, got {}",
+            HEADROOM
+        );
+    }
+
+    #[test]
+    fn test_bbr3_satellite_rho_scaling() {
+        // GEO: rho = 600/25 = 24.0, scaled = FULL_LOSS_COUNT * rho = 6*24 = 144
+        let rho_geo = satellite_rho(Duration::from_millis(600));
+        assert_eq!(rho_geo, 24.0);
+        let scaled_geo = ((FULL_LOSS_COUNT as f64 * rho_geo) as usize).min(256);
+        assert_eq!(scaled_geo, 144);
+
+        // LEO: rho = 40/25 = 1.6, scaled = 6*1.6 = 9.6 -> truncates to 9
+        let rho_leo = satellite_rho(Duration::from_millis(40));
+        assert_eq!(rho_leo, 1.6);
+        let scaled_leo = ((FULL_LOSS_COUNT as f64 * rho_leo) as usize).min(256);
+        assert_eq!(scaled_leo, 9);
+
+        // MEO: rho = 120/25 = 4.8, scaled = 6*4.8 = 28.8 -> truncates to 28
+        let rho_meo = satellite_rho(Duration::from_millis(120));
+        assert_eq!(rho_meo, 4.8);
+        let scaled_meo = ((FULL_LOSS_COUNT as f64 * rho_meo) as usize).min(256);
+        assert_eq!(scaled_meo, 28);
+
+        // Terrestrial: rho = 25/25 = 1.0, scaled = 6*1 = 6 (no scaling)
+        let rho_terr = satellite_rho(Duration::from_millis(25));
+        assert_eq!(rho_terr, 1.0);
+        let scaled_terr = ((FULL_LOSS_COUNT as f64 * rho_terr) as usize).min(256);
+        assert_eq!(scaled_terr, 6);
+    }
+
+    #[test]
+    fn test_bbr3_drain_gain() {
+        // In BBRv3, drain pacing_gain = PACING_GAIN / STARTUP_CWND_GAIN
+        // = 1.0 / 2.0 = 0.50
+        // In BBRv2 it was 1.0 / 2.77 = 0.361...
+        let drain_gain = PACING_GAIN / STARTUP_CWND_GAIN;
+        assert!(
+            (drain_gain - 0.5).abs() < f64::EPSILON,
+            "BBRv3 drain gain should be 0.50, got {}",
+            drain_gain
+        );
+
+        // Verify through state machine: drive to Drain and check exact value.
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let mut r = Recovery::new(&cfg);
+        let now = Instant::now();
+        let mss = r.max_datagram_size;
+
+        let mut pn = 0;
+
+        // Drive through 3 rounds to approach filled_pipe.
+        for _ in 0..3 {
+            let pkt = Sent {
+                pkt_num: pn,
+                frames: smallvec![],
+                time_sent: now,
+                time_acked: None,
+                time_lost: None,
+                size: mss,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: r.congestion.delivery_rate.delivered(),
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                has_data: false,
+                pmtud: false,
+            };
+
+            r.on_packet_sent(
+                pkt,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+
+            pn += 1;
+
+            let rtt = Duration::from_millis(50);
+            let now = now + rtt;
+
+            let mut acked = ranges::RangeSet::default();
+            acked.insert(0..pn);
+
+            assert!(r
+                .on_ack_received(
+                    &acked,
+                    25,
+                    packet::Epoch::Application,
+                    HandshakeStatus::default(),
+                    now,
+                    "",
+                )
+                .is_ok());
+        }
+
+        // Send 5 more packets to trigger filled_pipe on next ack.
+        for _ in 0..5 {
+            let pkt = Sent {
+                pkt_num: pn,
+                frames: smallvec![],
+                time_sent: now,
+                time_acked: None,
+                time_lost: None,
+                size: mss,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: r.congestion.delivery_rate.delivered(),
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                has_data: false,
+                pmtud: false,
+            };
+
+            r.on_packet_sent(
+                pkt,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+
+            pn += 1;
+        }
+
+        let rtt = Duration::from_millis(50);
+        let now = now + rtt;
+
+        let mut acked = ranges::RangeSet::default();
+        acked.insert(0..pn - 4);
+
+        assert!(r
+            .on_ack_received(
+                &acked,
+                25,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            )
+            .is_ok());
+
+        assert_eq!(r.congestion.bbr3_state.state, BBR3StateMachine::Drain);
+        assert!(r.congestion.bbr3_state.filled_pipe);
+
+        // Verify the exact BBRv3 drain gain value.
+        assert!(
+            (r.congestion.bbr3_state.pacing_gain - 0.5).abs() < f64::EPSILON,
+            "Drain pacing_gain should be 0.50 in BBRv3, got {}",
+            r.congestion.bbr3_state.pacing_gain
+        );
+    }
+
+    #[test]
+    fn test_bbr3_probe_rtt_interval_configurable() {
+        // Default: probe_rtt_interval = PROBE_RTT_INTERVAL = 5s
+        let state = State::new();
+        assert_eq!(
+            state.probe_rtt_interval,
+            Duration::from_secs(5),
+            "Default probe_rtt_interval should be 5s"
+        );
+        assert_eq!(state.probe_rtt_interval, PROBE_RTT_INTERVAL);
+
+        // Override: e.g. 15s for GEO satellite profile.
+        let mut state = State::new();
+        state.probe_rtt_interval = Duration::from_secs(15);
+        assert_eq!(
+            state.probe_rtt_interval,
+            Duration::from_secs(15),
+            "probe_rtt_interval should be overridable to 15s"
+        );
+
+        // Override: e.g. 10s for MEO satellite profile.
+        state.probe_rtt_interval = Duration::from_secs(10);
+        assert_eq!(
+            state.probe_rtt_interval,
+            Duration::from_secs(10),
+            "probe_rtt_interval should be overridable to 10s"
+        );
+
+        // Verify the override is used in ProbeRTT expiry logic.
+        // Drive state machine to ProbeBW, then check that ProbeRTT
+        // triggers after the configured interval.
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let mut r = Recovery::new(&cfg);
+        let now = Instant::now();
+        let mss = r.max_datagram_size;
+        let mut pn = 0;
+
+        // Drive to ProbeBW (4 rounds).
+        for _ in 0..4 {
+            let pkt = Sent {
+                pkt_num: pn,
+                frames: smallvec![],
+                time_sent: now,
+                time_acked: None,
+                time_lost: None,
+                size: mss,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: r.congestion.delivery_rate.delivered(),
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                has_data: false,
+                pmtud: false,
+            };
+
+            r.on_packet_sent(
+                pkt,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+
+            pn += 1;
+
+            let rtt = Duration::from_millis(50);
+            let now = now + rtt;
+
+            let mut acked = ranges::RangeSet::default();
+            acked.insert(0..pn);
+
+            assert!(r
+                .on_ack_received(
+                    &acked,
+                    25,
+                    packet::Epoch::Application,
+                    HandshakeStatus::default(),
+                    now,
+                    "",
+                )
+                .is_ok());
+        }
+
+        assert_eq!(
+            r.congestion.bbr3_state.state,
+            BBR3StateMachine::ProbeBWCRUISE
+        );
+
+        // Override probe_rtt_interval to 15s (GEO profile).
+        r.congestion.bbr3_state.probe_rtt_interval = Duration::from_secs(15);
+
+        // After default 5s: should NOT enter ProbeRTT (interval is now 15s).
+        let now = now + Duration::from_secs(6);
+
+        let pkt = Sent {
+            pkt_num: pn,
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: mss,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: r.congestion.delivery_rate.delivered(),
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
+            has_data: false,
+            pmtud: false,
+        };
+
+        r.on_packet_sent(
+            pkt,
+            packet::Epoch::Application,
+            HandshakeStatus::default(),
+            now,
+            "",
+        );
+
+        pn += 1;
+
+        let rtt = Duration::from_millis(100);
+        let now = now + rtt;
+
+        let mut acked = ranges::RangeSet::default();
+        acked.insert(0..pn);
+
+        assert!(r
+            .on_ack_received(
+                &acked,
+                25,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            )
+            .is_ok());
+
+        // Should still be in ProbeBW, not ProbeRTT (only 6s elapsed, need 15s).
+        assert_ne!(
+            r.congestion.bbr3_state.state,
+            BBR3StateMachine::ProbeRTT,
+            "Should not enter ProbeRTT before configured 15s interval"
+        );
+    }
 }
 
 mod init;
