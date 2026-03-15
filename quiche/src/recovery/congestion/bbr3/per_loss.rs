@@ -233,6 +233,16 @@ pub fn bbr3_update_congestion_signals(r: &mut Congestion, packet: &Acked) {
         r.bbr3_state.loss_events_in_round += 1;
     }
 
+    // sat(#48): BBRv3 -- In CRUISE, adapt lower bounds immediately on
+    // loss within the round, not just at round boundaries. This makes
+    // CRUISE more responsive to congestion signals mid-round.
+    if r.bbr3_state.state == BBR3StateMachine::ProbeBWCRUISE &&
+        r.bbr3_state.loss_in_round
+    {
+        bbr3_init_lower_bounds(r);
+        bbr3_loss_lower_bounds(r);
+    }
+
     if !r.bbr3_state.loss_round_start {
         // Wait until end of round trip.
         return;

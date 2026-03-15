@@ -467,17 +467,21 @@ fn bbr3_update_min_rtt(r: &mut Congestion, now: Instant) {
         bbr.probe_rtt_min_stamp = now;
     }
 
+    // sat(#48): BBRv3 -- Use windowed minimum probe_rtt_min_delay for
+    // min_rtt estimation instead of raw rs_rtt. This filters out
+    // transient RTT spikes and produces a cleaner baseline for BDP
+    // computation, which is especially important on satellite paths
+    // where RTT variance is high.
     let min_rtt_expired =
-        now > bbr.min_rtt_stamp + rs_rtt.saturating_mul(MIN_RTT_FILTER_LEN);
+        now > bbr.min_rtt_stamp + bbr.probe_rtt_min_delay.saturating_mul(MIN_RTT_FILTER_LEN);
 
-    // To do: Figure out Probe RTT logic
-    // if bbr.probe_rtt_min_delay < bbr.min_rtt ||  bbr.min_rtt == INITIAL_RTT ||
-    // min_rtt_expired {
-    if bbr.min_rtt == rtt::INITIAL_RTT || min_rtt_expired {
-        // bbr.min_rtt = bbr.probe_rtt_min_delay;
-        // bbr.min_rtt_stamp = bbr.probe_rtt_min_stamp;
-        bbr.min_rtt = rs_rtt;
-        bbr.min_rtt_stamp = now;
+    if bbr.probe_rtt_min_delay != Duration::MAX &&
+        (bbr.probe_rtt_min_delay < bbr.min_rtt ||
+            bbr.min_rtt == rtt::INITIAL_RTT ||
+            min_rtt_expired)
+    {
+        bbr.min_rtt = bbr.probe_rtt_min_delay;
+        bbr.min_rtt_stamp = bbr.probe_rtt_min_stamp;
     }
 }
 
