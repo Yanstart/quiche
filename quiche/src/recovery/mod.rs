@@ -523,7 +523,7 @@ impl Recovery {
     pub fn on_ack_received(
         &mut self, ranges: &ranges::RangeSet, ack_delay: u64,
         epoch: packet::Epoch, handshake_status: HandshakeStatus, now: Instant,
-        trace_id: &str,
+        trace_id: &str, ecn_counts: Option<frame::EcnCounts>,
     ) -> Result<(usize, usize, usize)> {
         let largest_acked = ranges.last().unwrap();
 
@@ -586,6 +586,7 @@ impl Recovery {
             &mut self.newly_acked,
             &self.rtt_stats,
             now,
+            ecn_counts,
         );
 
         self.bytes_in_flight -= acked_bytes;
@@ -1377,6 +1378,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((0, 0, 2 * 1000))
         );
@@ -1468,6 +1470,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((2, 2000, 2 * 1000))
         );
@@ -1629,6 +1632,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((0, 0, 3 * 1000))
         );
@@ -1800,6 +1804,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((1, 1000, 1000 * 2))
         );
@@ -1819,6 +1824,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((0, 0, 1000))
         );
@@ -1901,6 +1907,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((0, 0, 12000))
         );
@@ -2137,6 +2144,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((0, 0, 2 * 1000))
         );
@@ -2233,6 +2241,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((1, 1000, 2 * 1000))
         );

@@ -290,6 +290,7 @@ fn on_packet_sent(
 fn on_packets_acked(
     r: &mut Congestion, bytes_in_flight: usize, packets: &mut Vec<Acked>,
     now: Instant, _rtt_stats: &RttStats,
+    _ecn_counts: Option<crate::frame::EcnCounts>,
 ) {
     r.bbr_state.prior_bytes_in_flight = bytes_in_flight;
 
@@ -462,6 +463,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((2, 2 * mss, mss)),
         );
@@ -529,6 +531,7 @@ mod tests {
                     HandshakeStatus::default(),
                     now,
                     "",
+                    None,
                 ),
                 Ok((0, 0, mss)),
             );
@@ -583,6 +586,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((0, 0, mss)),
         );
@@ -647,6 +651,7 @@ mod tests {
                     HandshakeStatus::default(),
                     now,
                     "",
+                    None,
                 ),
                 Ok((0, 0, mss)),
             );
@@ -718,6 +723,7 @@ mod tests {
                     HandshakeStatus::default(),
                     now,
                     "",
+                    None,
                 ),
                 Ok((0, 0, mss)),
             );
@@ -774,6 +780,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((0, 0, mss)),
         );

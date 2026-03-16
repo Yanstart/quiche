@@ -31,6 +31,7 @@ use super::rtt::RttStats;
 use super::Acked;
 use super::RecoveryConfig;
 use super::Sent;
+use crate::frame;
 
 pub const PACING_MULTIPLIER: f64 = 1.25;
 pub struct Congestion {
@@ -218,6 +219,7 @@ impl Congestion {
     pub(crate) fn on_packets_acked(
         &mut self, bytes_in_flight: usize, acked: &mut Vec<Acked>,
         rtt_stats: &RttStats, now: Instant,
+        ecn_counts: Option<frame::EcnCounts>,
     ) {
         // Update delivery rate sample per acked packet.
         for pkt in acked.iter() {
@@ -234,6 +236,7 @@ impl Congestion {
             acked,
             now,
             rtt_stats,
+            ecn_counts,
         );
     }
 
@@ -313,6 +316,7 @@ pub(crate) struct CongestionControlOps {
         packets: &mut Vec<Acked>,
         now: Instant,
         rtt_stats: &RttStats,
+        ecn_counts: Option<frame::EcnCounts>,
     ),
 
     pub congestion_event: fn(

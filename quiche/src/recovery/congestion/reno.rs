@@ -62,6 +62,7 @@ pub fn on_packet_sent(
 fn on_packets_acked(
     r: &mut Congestion, _bytes_in_flight: usize, packets: &mut Vec<Acked>,
     now: Instant, rtt_stats: &RttStats,
+    _ecn_counts: Option<crate::frame::EcnCounts>,
 ) {
     for pkt in packets.drain(..) {
         on_packet_acked(r, &pkt, now, rtt_stats);

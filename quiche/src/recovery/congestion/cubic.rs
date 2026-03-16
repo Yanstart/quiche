@@ -177,6 +177,7 @@ fn on_packet_sent(
 fn on_packets_acked(
     r: &mut Congestion, bytes_in_flight: usize, packets: &mut Vec<Acked>,
     now: Instant, rtt_stats: &RttStats,
+    _ecn_counts: Option<crate::frame::EcnCounts>,
 ) {
     for pkt in packets.drain(..) {
         on_packet_acked(r, bytes_in_flight, &pkt, now, rtt_stats);

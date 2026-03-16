@@ -7017,7 +7017,7 @@ impl Connection {
             frame::Frame::Ping { .. } => (),
 
             frame::Frame::ACK {
-                ranges, ack_delay, ..
+                ranges, ack_delay, ecn_counts,
             } => {
                 let ack_delay = ack_delay
                     .checked_mul(2_u64.pow(
@@ -7049,6 +7049,7 @@ impl Connection {
                             handshake_status,
                             now,
                             &self.trace_id,
+                            ecn_counts.clone(),
                         )?;
 
                     self.lost_count += lost_packets;

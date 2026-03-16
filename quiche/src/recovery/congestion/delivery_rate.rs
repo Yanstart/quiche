@@ -379,6 +379,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             ),
             Ok((0, 0, mss * 5)),
         );

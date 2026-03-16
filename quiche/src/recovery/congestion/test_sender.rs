@@ -108,6 +108,7 @@ impl TestSender {
             &mut vec![acked],
             &self.rtt_stats,
             now,
+            None,
         );
     }
 
@@ -137,6 +138,7 @@ impl TestSender {
             &mut acked,
             &self.rtt_stats,
             self.time,
+            None,
         );
 
         self.bytes_in_flight -= n * bytes;

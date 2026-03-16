@@ -575,6 +575,7 @@ fn on_packet_sent(
 fn on_packets_acked(
     r: &mut Congestion, bytes_in_flight: usize, packets: &mut Vec<Acked>,
     now: Instant, _rtt_stats: &RttStats,
+    _ecn_counts: Option<crate::frame::EcnCounts>,
 ) {
     r.bbr3_state.newly_acked_bytes = 0;
 
@@ -766,6 +767,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             )
             .is_ok());
 
@@ -834,6 +836,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             )
             .is_ok());
 
@@ -904,6 +907,7 @@ mod tests {
                     HandshakeStatus::default(),
                     now,
                     "",
+                    None,
                 )
                 .is_ok());
         }
@@ -957,6 +961,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             )
             .is_ok());
 
@@ -1023,6 +1028,7 @@ mod tests {
                     HandshakeStatus::default(),
                     now,
                     "",
+                    None,
                 )
                 .is_ok());
         }
@@ -1081,6 +1087,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             )
             .is_ok());
 
@@ -1588,6 +1595,7 @@ mod tests {
                     HandshakeStatus::default(),
                     now,
                     "",
+                    None,
                 )
                 .is_ok());
         }
@@ -1638,6 +1646,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             )
             .is_ok());
 
@@ -1736,6 +1745,7 @@ mod tests {
                     HandshakeStatus::default(),
                     now,
                     "",
+                    None,
                 )
                 .is_ok());
         }
@@ -1794,6 +1804,7 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
+                None,
             )
             .is_ok());
 
