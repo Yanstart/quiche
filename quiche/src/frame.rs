@@ -49,9 +49,9 @@ pub const MAX_STREAM_SIZE: u64 = 1 << 62;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EcnCounts {
-    ect0_count: u64,
-    ect1_count: u64,
-    ecn_ce_count: u64,
+    pub(crate) ect0_count: u64,
+    pub(crate) ect1_count: u64,
+    pub(crate) ecn_ce_count: u64,
 }
 
 #[derive(Clone, PartialEq, Eq)]

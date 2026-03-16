@@ -134,6 +134,22 @@ const MAX_BW_GROWTH_THRESHOLD: f64 = 1.25;
 /// Threshold for determining maximum bandwidth of network during Startup.
 const MAX_BW_COUNT: usize = 3;
 
+/// ECN: Maximum min_rtt (in microseconds) for ECN eligibility.
+/// ECN is disabled for satellite links where min_rtt > 5ms.
+const ECN_MAX_RTT_US: u64 = 5_000;
+
+/// ECN: EWMA gain for updating ecn_alpha (6.25%).
+const ECN_ALPHA_GAIN: f64 = 1.0 / 16.0;
+
+/// ECN: Initial value for ecn_alpha.
+const ECN_ALPHA_INIT: f64 = 1.0;
+
+/// ECN: Maximum reduction factor per ECN signal (33%).
+const ECN_FACTOR: f64 = 1.0 / 3.0;
+
+/// ECN: CE ratio threshold above which inflight_hi and bw_hi are reduced.
+const ECN_THRESH: f64 = 0.5;
+
 /// BBR3 Internal State Machine.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum BBR3StateMachine {
@@ -406,6 +422,25 @@ pub struct State {
 
     /// Count of consecutive isolated losses classified as bit errors.
     pub consecutive_isolated_losses: u32,
+
+    /// ECN: Whether the connection is eligible for ECN processing
+    /// (min_rtt <= 5ms, i.e., terrestrial links only).
+    pub(crate) ecn_eligible: bool,
+
+    /// ECN: Whether any CE marks were observed in the current round.
+    pub(crate) ecn_in_round: bool,
+
+    /// ECN: EWMA of CE ratio, used to scale inflight_hi/bw_hi reductions.
+    pub(crate) ecn_alpha: f64,
+
+    /// ECN: Total bytes delivered in the current round (for CE ratio).
+    pub(crate) ecn_bytes_delivered: usize,
+
+    /// ECN: Total CE-marked bytes delivered in the current round.
+    pub(crate) ecn_ce_bytes_delivered: usize,
+
+    /// ECN: Prior cumulative ECN-CE count from the last ACK, for delta computation.
+    pub(crate) prior_ecn_ce_count: u64,
 }
 
 impl State {
@@ -531,6 +566,12 @@ impl State {
             congestion_losses_in_round: 0,
             last_loss_time: None,
             consecutive_isolated_losses: 0,
+            ecn_eligible: false,
+            ecn_in_round: false,
+            ecn_alpha: ECN_ALPHA_INIT,
+            ecn_bytes_delivered: 0,
+            ecn_ce_bytes_delivered: 0,
+            prior_ecn_ce_count: 0,
         }
     }
 }
@@ -575,7 +616,7 @@ fn on_packet_sent(
 fn on_packets_acked(
     r: &mut Congestion, bytes_in_flight: usize, packets: &mut Vec<Acked>,
     now: Instant, _rtt_stats: &RttStats,
-    _ecn_counts: Option<crate::frame::EcnCounts>,
+    ecn_counts: Option<crate::frame::EcnCounts>,
 ) {
     r.bbr3_state.newly_acked_bytes = 0;
 
@@ -591,6 +632,7 @@ fn on_packets_acked(
         bytes_in_flight -= p.size;
 
         r.bbr3_state.newly_acked_bytes += p.size;
+        r.bbr3_state.ecn_bytes_delivered += p.size;
     }
 
     if let Some(ts) = time_sent {
@@ -601,6 +643,11 @@ fn on_packets_acked(
     }
 
     per_ack::bbr3_update_control_parameters(r, bytes_in_flight, now);
+
+    // ECN processing: update alpha and potentially reduce inflight_hi/bw_hi.
+    if let Some(ref ecn) = ecn_counts {
+        per_loss::bbr3_update_ecn(r, ecn);
+    }
 
     r.bbr3_state.newly_lost_bytes = 0;
 }
@@ -1814,6 +1861,189 @@ mod tests {
             BBR3StateMachine::ProbeRTT,
             "Should not enter ProbeRTT before configured 15s interval"
         );
+    }
+
+    #[test]
+    fn test_bbr3_ecn_disabled_for_satellite() {
+        // ECN should be disabled when min_rtt > 5ms.
+        assert!(
+            Duration::from_millis(40).as_micros() as u64 > ECN_MAX_RTT_US
+        ); // LEO
+        assert!(
+            Duration::from_millis(180).as_micros() as u64 > ECN_MAX_RTT_US
+        ); // MEO
+        assert!(
+            Duration::from_millis(600).as_micros() as u64 > ECN_MAX_RTT_US
+        ); // GEO
+        // Only very low RTT could use ECN.
+        assert!(
+            Duration::from_millis(5).as_micros() as u64 <= ECN_MAX_RTT_US
+        );
+    }
+
+    #[test]
+    fn test_bbr3_ecn_constants() {
+        assert_eq!(ECN_MAX_RTT_US, 5_000);
+        assert!((ECN_ALPHA_GAIN - 1.0 / 16.0).abs() < 0.001);
+        assert!((ECN_ALPHA_INIT - 1.0).abs() < f64::EPSILON);
+        assert!((ECN_FACTOR - 1.0 / 3.0).abs() < 0.001);
+        assert!((ECN_THRESH - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_bbr3_ecn_state_init() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let r = Recovery::new(&cfg);
+        let bbr = &r.congestion.bbr3_state;
+
+        assert!(!bbr.ecn_eligible);
+        assert!(!bbr.ecn_in_round);
+        assert!((bbr.ecn_alpha - ECN_ALPHA_INIT).abs() < f64::EPSILON);
+        assert_eq!(bbr.ecn_bytes_delivered, 0);
+        assert_eq!(bbr.ecn_ce_bytes_delivered, 0);
+        assert_eq!(bbr.prior_ecn_ce_count, 0);
+    }
+
+    #[test]
+    fn test_bbr3_ecn_skipped_for_satellite_rtt() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+
+        // Set min_rtt to 40ms (LEO satellite): ECN should be disabled.
+        cc.bbr3_state.min_rtt = Duration::from_millis(40);
+
+        let ecn = crate::frame::EcnCounts {
+            ect0_count: 0,
+            ect1_count: 0,
+            ecn_ce_count: 10,
+        };
+
+        per_loss::bbr3_update_ecn(&mut cc, &ecn);
+
+        assert!(!cc.bbr3_state.ecn_eligible);
+        // prior_ecn_ce_count should NOT be updated since we returned early.
+        assert_eq!(cc.bbr3_state.prior_ecn_ce_count, 0);
+    }
+
+    #[test]
+    fn test_bbr3_ecn_processes_ce_for_terrestrial() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+
+        // Set min_rtt to 2ms (terrestrial): ECN should be active.
+        cc.bbr3_state.min_rtt = Duration::from_millis(2);
+        cc.bbr3_state.round_start = false;
+
+        let ecn = crate::frame::EcnCounts {
+            ect0_count: 0,
+            ect1_count: 0,
+            ecn_ce_count: 5,
+        };
+
+        per_loss::bbr3_update_ecn(&mut cc, &ecn);
+
+        assert!(cc.bbr3_state.ecn_eligible);
+        assert!(cc.bbr3_state.ecn_in_round);
+        assert_eq!(cc.bbr3_state.ecn_ce_bytes_delivered, 5);
+        assert_eq!(cc.bbr3_state.prior_ecn_ce_count, 5);
+    }
+
+    #[test]
+    fn test_bbr3_ecn_round_start_reduces_inflight() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+
+        // Set up terrestrial RTT and simulate accumulated CE bytes.
+        cc.bbr3_state.min_rtt = Duration::from_millis(2);
+        cc.bbr3_state.round_start = true;
+        cc.bbr3_state.ecn_bytes_delivered = 100;
+        cc.bbr3_state.ecn_ce_bytes_delivered = 0;
+        cc.bbr3_state.inflight_hi = 10000;
+        cc.bbr3_state.bw_hi = 1_000_000;
+
+        // CE ratio will be (0 + 60) / 100 = 60% > ECN_THRESH (50%).
+        let ecn = crate::frame::EcnCounts {
+            ect0_count: 0,
+            ect1_count: 0,
+            ecn_ce_count: 60,
+        };
+
+        per_loss::bbr3_update_ecn(&mut cc, &ecn);
+
+        // inflight_hi and bw_hi should be reduced.
+        assert!(cc.bbr3_state.inflight_hi < 10000);
+        assert!(cc.bbr3_state.bw_hi < 1_000_000);
+
+        // Per-round counters should be reset.
+        assert_eq!(cc.bbr3_state.ecn_bytes_delivered, 0);
+        assert_eq!(cc.bbr3_state.ecn_ce_bytes_delivered, 0);
+        assert!(!cc.bbr3_state.ecn_in_round);
+    }
+
+    #[test]
+    fn test_bbr3_ecn_no_reduction_below_thresh() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+
+        // Set up terrestrial RTT and simulate low CE ratio.
+        cc.bbr3_state.min_rtt = Duration::from_millis(2);
+        cc.bbr3_state.round_start = true;
+        cc.bbr3_state.ecn_bytes_delivered = 100;
+        cc.bbr3_state.ecn_ce_bytes_delivered = 0;
+        cc.bbr3_state.inflight_hi = 10000;
+        cc.bbr3_state.bw_hi = 1_000_000;
+
+        // CE ratio will be (0 + 10) / 100 = 10% < ECN_THRESH (50%).
+        let ecn = crate::frame::EcnCounts {
+            ect0_count: 0,
+            ect1_count: 0,
+            ecn_ce_count: 10,
+        };
+
+        per_loss::bbr3_update_ecn(&mut cc, &ecn);
+
+        // inflight_hi and bw_hi should NOT be reduced.
+        assert_eq!(cc.bbr3_state.inflight_hi, 10000);
+        assert_eq!(cc.bbr3_state.bw_hi, 1_000_000);
+    }
+
+    #[test]
+    fn test_bbr3_ecn_zero_delta_noop() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+
+        cc.bbr3_state.min_rtt = Duration::from_millis(2);
+        cc.bbr3_state.prior_ecn_ce_count = 5;
+
+        // Same CE count as prior: delta = 0, should be a no-op.
+        let ecn = crate::frame::EcnCounts {
+            ect0_count: 0,
+            ect1_count: 0,
+            ecn_ce_count: 5,
+        };
+
+        per_loss::bbr3_update_ecn(&mut cc, &ecn);
+
+        // ecn_eligible should remain false (not set because we returned early).
+        assert!(!cc.bbr3_state.ecn_eligible);
+        assert!(!cc.bbr3_state.ecn_in_round);
     }
 }
 

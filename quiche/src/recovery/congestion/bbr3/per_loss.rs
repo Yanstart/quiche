@@ -26,6 +26,7 @@
 
 use super::*;
 use std::time::Duration;
+use crate::frame;
 
 // BBR3 Functions on every packet loss event.
 //
@@ -310,4 +311,62 @@ fn bbr3_is_probing_bw(r: &mut Congestion) -> bool {
     state == BBR3StateMachine::Startup ||
         state == BBR3StateMachine::ProbeBWREFILL ||
         state == BBR3StateMachine::ProbeBWUP
+}
+
+/// BBRv3 ECN congestion signal processing.
+///
+/// ECN is gated by RTT: disabled for satellite links (min_rtt > 5ms)
+/// and only active for terrestrial acceleration. When active, tracks
+/// the CE (Congestion Experienced) ratio per round and reduces
+/// inflight_hi and bw_hi when the ratio exceeds ECN_THRESH.
+pub(crate) fn bbr3_update_ecn(
+    r: &mut Congestion,
+    ecn_counts: &frame::EcnCounts,
+) {
+    let bbr = &mut r.bbr3_state;
+
+    // Gate: disabled when min_rtt > 5ms (all satellite profiles).
+    if bbr.min_rtt.as_micros() as u64 > ECN_MAX_RTT_US {
+        bbr.ecn_eligible = false;
+        return;
+    }
+
+    // Compute CE delta since last ACK.
+    let ce_delta =
+        ecn_counts.ecn_ce_count.saturating_sub(bbr.prior_ecn_ce_count);
+    bbr.prior_ecn_ce_count = ecn_counts.ecn_ce_count;
+
+    if ce_delta == 0 {
+        return;
+    }
+
+    bbr.ecn_eligible = true;
+    bbr.ecn_in_round = true;
+    bbr.ecn_ce_bytes_delivered += ce_delta as usize;
+
+    // At round start: compute CE ratio, update alpha, reduce if above
+    // threshold.
+    if bbr.round_start {
+        let ce_ratio = if bbr.ecn_bytes_delivered > 0 {
+            bbr.ecn_ce_bytes_delivered as f64 /
+                bbr.ecn_bytes_delivered as f64
+        } else {
+            0.0
+        };
+
+        bbr.ecn_alpha =
+            bbr.ecn_alpha * (1.0 - ECN_ALPHA_GAIN) + ce_ratio * ECN_ALPHA_GAIN;
+
+        if ce_ratio > ECN_THRESH {
+            let ecn_cut = 1.0 - (bbr.ecn_alpha * ECN_FACTOR);
+            bbr.inflight_hi =
+                (bbr.inflight_hi as f64 * ecn_cut) as usize;
+            bbr.bw_hi = (bbr.bw_hi as f64 * ecn_cut) as u64;
+        }
+
+        // Reset per-round counters.
+        bbr.ecn_bytes_delivered = 0;
+        bbr.ecn_ce_bytes_delivered = 0;
+        bbr.ecn_in_round = false;
+    }
 }
