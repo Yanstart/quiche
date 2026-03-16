@@ -146,6 +146,11 @@ impl Congestion {
 
         (cc.cc_ops.on_init)(&mut cc);
 
+        // Apply configurable probe_rtt_interval override for BBRv3.
+        if let Some(interval) = recovery_config.probe_rtt_interval {
+            cc.bbr3_state.probe_rtt_interval = interval;
+        }
+
         cc
     }
 

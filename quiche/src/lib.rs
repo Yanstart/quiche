@@ -818,6 +818,7 @@ pub struct Config {
     satellite_loss_threshold: Option<f64>,
     satellite_loss_discrimination: bool,
     satellite_rho_scaling: bool,
+    probe_rtt_interval: Option<std::time::Duration>,
     disable_dcid_reuse: bool,
 }
 
@@ -891,6 +892,7 @@ impl Config {
             satellite_loss_threshold: None,
             satellite_loss_discrimination: false,
             satellite_rho_scaling: false,
+            probe_rtt_interval: None,
             satellite_time_threshold: None,
             disable_dcid_reuse: false,
         })
@@ -1413,6 +1415,15 @@ impl Config {
     /// Default is `false` (disabled).
     pub fn set_satellite_rho_scaling(&mut self, enabled: bool) {
         self.satellite_rho_scaling = enabled;
+    }
+
+    /// Sets the ProbeRTT interval for BBRv3.
+    ///
+    /// Default is 5 seconds. Satellite links may benefit from longer
+    /// intervals (e.g. 10s for MEO, 15s for GEO) to avoid unnecessary
+    /// throughput dips during ProbeRTT phases on high-RTT paths.
+    pub fn set_probe_rtt_interval(&mut self, interval: std::time::Duration) {
+        self.probe_rtt_interval = Some(interval);
     }
 }
 

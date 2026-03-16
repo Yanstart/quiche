@@ -366,6 +366,7 @@ pub struct RecoveryConfig {
     pub satellite_loss_threshold: Option<f64>,
     pub satellite_loss_discrimination: bool,
     pub satellite_rho_scaling: bool,
+    pub probe_rtt_interval: Option<std::time::Duration>,
 }
 
 impl RecoveryConfig {
@@ -384,6 +385,7 @@ impl RecoveryConfig {
             satellite_loss_threshold: config.satellite_loss_threshold,
             satellite_loss_discrimination: config.satellite_loss_discrimination,
             satellite_rho_scaling: config.satellite_rho_scaling,
+            probe_rtt_interval: config.probe_rtt_interval,
         }
     }
 }

@@ -135,8 +135,8 @@ const MAX_BW_GROWTH_THRESHOLD: f64 = 1.25;
 const MAX_BW_COUNT: usize = 3;
 
 /// ECN: Maximum min_rtt (in microseconds) for ECN eligibility.
-/// ECN is disabled for satellite links where min_rtt > 5ms.
-const ECN_MAX_RTT_US: u64 = 5_000;
+/// 100ms -- ECN active for terrestrial and LEO, disabled for MEO/GEO where feedback is stale.
+const ECN_MAX_RTT_US: u64 = 100_000;
 
 /// ECN: EWMA gain for updating ecn_alpha (6.25%).
 const ECN_ALPHA_GAIN: f64 = 1.0 / 16.0;
@@ -424,7 +424,7 @@ pub struct State {
     pub consecutive_isolated_losses: u32,
 
     /// ECN: Whether the connection is eligible for ECN processing
-    /// (min_rtt <= 5ms, i.e., terrestrial links only).
+    /// (min_rtt <= 100ms, i.e., terrestrial and LEO links).
     pub(crate) ecn_eligible: bool,
 
     /// ECN: Whether any CE marks were observed in the current round.
@@ -1865,25 +1865,29 @@ mod tests {
 
     #[test]
     fn test_bbr3_ecn_disabled_for_satellite() {
-        // ECN should be disabled when min_rtt > 5ms.
-        assert!(
-            Duration::from_millis(40).as_micros() as u64 > ECN_MAX_RTT_US
-        ); // LEO
-        assert!(
-            Duration::from_millis(180).as_micros() as u64 > ECN_MAX_RTT_US
-        ); // MEO
-        assert!(
-            Duration::from_millis(600).as_micros() as u64 > ECN_MAX_RTT_US
-        ); // GEO
-        // Only very low RTT could use ECN.
+        // ECN gate at 100ms: active for terrestrial and LEO, disabled for MEO/GEO.
+
+        // Terrestrial (5ms): ECN enabled (5000 < 100000).
         assert!(
             Duration::from_millis(5).as_micros() as u64 <= ECN_MAX_RTT_US
+        );
+        // LEO (40ms): ECN enabled (40000 < 100000).
+        assert!(
+            Duration::from_millis(40).as_micros() as u64 <= ECN_MAX_RTT_US
+        );
+        // MEO (180ms): ECN disabled (180000 > 100000).
+        assert!(
+            Duration::from_millis(180).as_micros() as u64 > ECN_MAX_RTT_US
+        );
+        // GEO (600ms): ECN disabled (600000 > 100000).
+        assert!(
+            Duration::from_millis(600).as_micros() as u64 > ECN_MAX_RTT_US
         );
     }
 
     #[test]
     fn test_bbr3_ecn_constants() {
-        assert_eq!(ECN_MAX_RTT_US, 5_000);
+        assert_eq!(ECN_MAX_RTT_US, 100_000);
         assert!((ECN_ALPHA_GAIN - 1.0 / 16.0).abs() < 0.001);
         assert!((ECN_ALPHA_INIT - 1.0).abs() < f64::EPSILON);
         assert!((ECN_FACTOR - 1.0 / 3.0).abs() < 0.001);
@@ -1914,8 +1918,8 @@ mod tests {
         let r = Recovery::new(&cfg);
         let mut cc = r.congestion;
 
-        // Set min_rtt to 40ms (LEO satellite): ECN should be disabled.
-        cc.bbr3_state.min_rtt = Duration::from_millis(40);
+        // Set min_rtt to 180ms (MEO satellite): ECN should be disabled.
+        cc.bbr3_state.min_rtt = Duration::from_millis(180);
 
         let ecn = crate::frame::EcnCounts {
             ect0_count: 0,
@@ -2044,6 +2048,253 @@ mod tests {
         // ecn_eligible should remain false (not set because we returned early).
         assert!(!cc.bbr3_state.ecn_eligible);
         assert!(!cc.bbr3_state.ecn_in_round);
+    }
+
+    #[test]
+    fn test_bbr3_probe_bw_up_no_premature_down() {
+        // Verify: in ProbeBW_UP, when inflight_too_high is detected,
+        // bw_probe_samples remains true and state does NOT transition
+        // to DOWN. Only inflight_hi is capped.
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+        let now = Instant::now();
+
+        // Manually set up ProbeBW_UP state.
+        cc.bbr3_state.state = BBR3StateMachine::ProbeBWUP;
+        cc.bbr3_state.bw_probe_samples = true;
+        cc.bbr3_state.min_rtt = Duration::from_millis(50);
+        cc.bbr3_state.max_bw = 1_000_000;
+        cc.bbr3_state.bw = 1_000_000;
+        cc.congestion_window = 100_000;
+        cc.bbr3_state.inflight_hi = usize::MAX;
+
+        // Set tx_in_flight and lost to trigger inflight_too_high.
+        // LOSS_THRESH = 0.02, so lost > tx_in_flight * 0.02.
+        cc.bbr3_state.tx_in_flight = 50_000;
+        cc.bbr3_state.lost = 2_000; // 4% > 2%
+
+        // Confirm inflight is too high.
+        assert!(per_loss::bbr3_is_inflight_too_high(&mut cc));
+
+        let old_inflight_hi = cc.bbr3_state.inflight_hi;
+
+        // Call the check function (which calls handle_inflight_too_high).
+        let result = per_loss::bbr3_check_inflight_too_high(&mut cc, now);
+        assert!(result, "inflight should be detected as too high");
+
+        // BBRv3 behavior: state stays in ProbeBW_UP.
+        assert_eq!(
+            cc.bbr3_state.state,
+            BBR3StateMachine::ProbeBWUP,
+            "State must remain ProbeBWUP, not transition to DOWN"
+        );
+
+        // bw_probe_samples stays true (not cleared).
+        assert!(
+            cc.bbr3_state.bw_probe_samples,
+            "bw_probe_samples must remain true in ProbeBW_UP"
+        );
+
+        // inflight_hi was capped (reduced from MAX).
+        assert!(
+            cc.bbr3_state.inflight_hi < old_inflight_hi,
+            "inflight_hi should be capped, was {} now {}",
+            old_inflight_hi,
+            cc.bbr3_state.inflight_hi
+        );
+    }
+
+    #[test]
+    fn test_bbr3_probe_bw_up_vs_non_up_behavior() {
+        // Verify: in a non-UP state (e.g. DOWN), inflight_too_high
+        // DOES set bw_probe_samples=false (the old BBRv2 behavior that
+        // we preserve for non-UP states).
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+        let now = Instant::now();
+
+        // Set up ProbeBW_DOWN state.
+        cc.bbr3_state.state = BBR3StateMachine::ProbeBWDOWN;
+        cc.bbr3_state.bw_probe_samples = true;
+        cc.bbr3_state.min_rtt = Duration::from_millis(50);
+        cc.bbr3_state.max_bw = 1_000_000;
+        cc.bbr3_state.bw = 1_000_000;
+        cc.congestion_window = 100_000;
+
+        cc.bbr3_state.tx_in_flight = 50_000;
+        cc.bbr3_state.lost = 2_000; // 4% > 2%
+
+        per_loss::bbr3_check_inflight_too_high(&mut cc, now);
+
+        // Non-UP: bw_probe_samples should be cleared.
+        assert!(
+            !cc.bbr3_state.bw_probe_samples,
+            "bw_probe_samples must be false in non-UP states"
+        );
+    }
+
+    #[test]
+    fn test_bbr3_cruise_responsive_adaptation() {
+        // Verify: during ProbeBW_CRUISE, when loss_in_round is true,
+        // inflight_lo and bw_lo are adapted immediately (not waiting
+        // for round_start).
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+        let now = Instant::now();
+
+        // Set up ProbeBW_CRUISE state.
+        cc.bbr3_state.state = BBR3StateMachine::ProbeBWCRUISE;
+        cc.bbr3_state.min_rtt = Duration::from_millis(50);
+        cc.bbr3_state.max_bw = 1_000_000;
+        cc.bbr3_state.bw = 1_000_000;
+        cc.congestion_window = 100_000;
+
+        // Pre-set loss_in_round (from a previous ACK this round).
+        cc.bbr3_state.loss_in_round = true;
+
+        // Mid-round: loss_round_start is false.
+        cc.bbr3_state.loss_round_start = false;
+
+        // Set initial inflight_lo and bw_lo (initialized from first congestion).
+        cc.bbr3_state.inflight_lo = 80_000;
+        cc.bbr3_state.bw_lo = 800_000;
+
+        // Set inflight_latest and bw_latest (1-round max samples).
+        cc.bbr3_state.inflight_latest = 50_000;
+        cc.bbr3_state.bw_latest = 600_000;
+
+        // Simulate: there was a loss (lost > 0) in this ACK.
+        cc.bbr3_state.lost = 500;
+
+        // Create a dummy Acked packet for the function signature.
+        let acked = Acked {
+            pkt_num: 100,
+            time_sent: now - Duration::from_millis(50),
+            size: 1200,
+            rtt: Duration::from_millis(50),
+            delivered: 10000,
+            delivered_time: now - Duration::from_millis(100),
+            first_sent_time: now - Duration::from_millis(150),
+            is_app_limited: false,
+        };
+
+        let inflight_lo_before = cc.bbr3_state.inflight_lo;
+        let bw_lo_before = cc.bbr3_state.bw_lo;
+
+        // Call congestion signal update.
+        per_loss::bbr3_update_congestion_signals(&mut cc, &acked);
+
+        // CRUISE responsive: inflight_lo and bw_lo should be reduced
+        // immediately, even though loss_round_start is false.
+        assert!(
+            cc.bbr3_state.inflight_lo < inflight_lo_before,
+            "inflight_lo should be reduced mid-round in CRUISE: was {} now {}",
+            inflight_lo_before,
+            cc.bbr3_state.inflight_lo
+        );
+        assert!(
+            cc.bbr3_state.bw_lo < bw_lo_before,
+            "bw_lo should be reduced mid-round in CRUISE: was {} now {}",
+            bw_lo_before,
+            cc.bbr3_state.bw_lo
+        );
+
+        // Verify reduction factor: BETA = 0.7
+        // bw_lo = max(bw_latest, bw_lo * BETA) = max(600000, 800000*0.7) = max(600000, 560000) = 600000
+        assert_eq!(
+            cc.bbr3_state.bw_lo, 600_000,
+            "bw_lo should be max(bw_latest=600000, bw_lo*0.7=560000)"
+        );
+        // inflight_lo = max(inflight_latest, inflight_lo * BETA) = max(50000, 80000*0.7) = max(50000, 56000) = 56000
+        assert_eq!(
+            cc.bbr3_state.inflight_lo, 56_000,
+            "inflight_lo should be max(inflight_latest=50000, inflight_lo*0.7=56000)"
+        );
+    }
+
+    #[test]
+    fn test_bbr3_cruise_no_adaptation_without_loss() {
+        // Verify: during ProbeBW_CRUISE without loss_in_round,
+        // inflight_lo and bw_lo are NOT reduced mid-round.
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+
+        let r = Recovery::new(&cfg);
+        let mut cc = r.congestion;
+        let now = Instant::now();
+
+        cc.bbr3_state.state = BBR3StateMachine::ProbeBWCRUISE;
+        cc.bbr3_state.min_rtt = Duration::from_millis(50);
+        cc.bbr3_state.max_bw = 1_000_000;
+        cc.bbr3_state.bw = 1_000_000;
+        cc.congestion_window = 100_000;
+
+        // No loss in round.
+        cc.bbr3_state.loss_in_round = false;
+        cc.bbr3_state.loss_round_start = false;
+        cc.bbr3_state.lost = 0;
+
+        cc.bbr3_state.inflight_lo = 80_000;
+        cc.bbr3_state.bw_lo = 800_000;
+
+        let acked = Acked {
+            pkt_num: 100,
+            time_sent: now - Duration::from_millis(50),
+            size: 1200,
+            rtt: Duration::from_millis(50),
+            delivered: 10000,
+            delivered_time: now - Duration::from_millis(100),
+            first_sent_time: now - Duration::from_millis(150),
+            is_app_limited: false,
+        };
+
+        per_loss::bbr3_update_congestion_signals(&mut cc, &acked);
+
+        // Without loss, values should not change.
+        assert_eq!(cc.bbr3_state.inflight_lo, 80_000);
+        assert_eq!(cc.bbr3_state.bw_lo, 800_000);
+    }
+
+    #[test]
+    fn test_bbr3_probe_rtt_interval_from_config() {
+        // Verify that Config::set_probe_rtt_interval() plumbs through
+        // to bbr3_state.probe_rtt_interval via RecoveryConfig.
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+        cfg.set_probe_rtt_interval(Duration::from_secs(15));
+
+        let r = Recovery::new(&cfg);
+
+        assert_eq!(
+            r.congestion.bbr3_state.probe_rtt_interval,
+            Duration::from_secs(15),
+            "probe_rtt_interval should be plumbed from Config to BBR3 state"
+        );
+    }
+
+    #[test]
+    fn test_bbr3_probe_rtt_interval_default_when_not_set() {
+        // Verify default probe_rtt_interval when Config does not set it.
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR3);
+        // Do NOT call set_probe_rtt_interval.
+
+        let r = Recovery::new(&cfg);
+
+        assert_eq!(
+            r.congestion.bbr3_state.probe_rtt_interval,
+            Duration::from_secs(5),
+            "Default probe_rtt_interval should be 5s (PROBE_RTT_INTERVAL)"
+        );
     }
 }
 

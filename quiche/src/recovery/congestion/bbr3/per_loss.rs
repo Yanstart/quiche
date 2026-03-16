@@ -315,8 +315,8 @@ fn bbr3_is_probing_bw(r: &mut Congestion) -> bool {
 
 /// BBRv3 ECN congestion signal processing.
 ///
-/// ECN is gated by RTT: disabled for satellite links (min_rtt > 5ms)
-/// and only active for terrestrial acceleration. When active, tracks
+/// ECN is gated by RTT: disabled for MEO/GEO satellite links (min_rtt > 100ms)
+/// and active for terrestrial and LEO. When active, tracks
 /// the CE (Congestion Experienced) ratio per round and reduces
 /// inflight_hi and bw_hi when the ratio exceeds ECN_THRESH.
 pub(crate) fn bbr3_update_ecn(
@@ -325,7 +325,7 @@ pub(crate) fn bbr3_update_ecn(
 ) {
     let bbr = &mut r.bbr3_state;
 
-    // Gate: disabled when min_rtt > 5ms (all satellite profiles).
+    // Gate: disabled when min_rtt > 100ms (MEO/GEO satellite profiles).
     if bbr.min_rtt.as_micros() as u64 > ECN_MAX_RTT_US {
         bbr.ecn_eligible = false;
         return;
